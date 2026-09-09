@@ -1,0 +1,18 @@
+{
+  "capital": 100000,
+  "candidate_count": 10,
+  "recommended_count": 5,
+  "max_positions": 3,
+  "min_daily_amount": 500000000,
+  "min_listing_days": 180,
+  "max_10d_gain": 0.25,
+  "max_20d_gain": 0.40,
+  "max_gap_up": 0.07,
+  "max_upper_shadow": 0.06,
+  "stop_levels": [-0.0125, -0.025, -0.05],
+  "stop_sell_fractions": [0.25, 0.5, 1.0],
+  "take_levels": [0.03, 0.06],
+  "take_sell_fractions": [0.25, 0.5],
+  "trailing_drawdown": 0.03,
+  "slippage": 0.001
+}

@@ -19,6 +19,9 @@ env/
 # Runtime artifacts at the repo root only — an unanchored `data/` would also
 # ignore the quanti/data/ source package.
 /data/
+!/data/
+/data/*
+!/data/paper_state.json
 node_modules/
 web/dist/
 .pytest_cache/

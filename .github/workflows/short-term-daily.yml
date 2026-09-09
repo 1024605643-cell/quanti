@@ -1,0 +1,51 @@
+name: A股短线量化日报
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "20 0 * * 1-5"
+    - cron: "30 2 * * 1-5"
+    - cron: "30 6 * * 1-5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: short-term-daily
+  cancel-in-progress: false
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      EMAIL_SENDER: ${{ vars.EMAIL_SENDER }}
+      EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
+      WENCAI_COOKIE: ${{ secrets.WENCAI_COOKIE }}
+      LLM_PRIMARY_API_KEY: ${{ secrets.LLM_PRIMARY_API_KEY }}
+      LLM_PRIMARY_BASE_URL: ${{ vars.LLM_PRIMARY_BASE_URL }}
+      LLM_PRIMARY_MODEL: ${{ vars.LLM_PRIMARY_MODEL }}
+      CONFIRM_URL: https://github.com/${{ github.repository }}/actions/workflows/paper-trade.yml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: pip install akshare pandas pywencai
+      - run: python scripts/short_term_daily.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: short-term-report-${{ github.run_number }}
+          path: docs/quant
+      - name: 保存看板与模拟盘状态
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/quant data/paper_state.json
+          git diff --cached --quiet || git commit -m "chore: update short-term quant report"
+          git push

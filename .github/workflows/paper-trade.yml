@@ -1,0 +1,54 @@
+name: 确认模拟交易
+
+on:
+  workflow_dispatch:
+    inputs:
+      side:
+        description: 买入 buy / 卖出 sell
+        required: true
+        type: choice
+        options: [buy, sell]
+      code:
+        description: 六位股票代码
+        required: true
+      name:
+        description: 股票名称（可空）
+        required: false
+      price:
+        description: 确认时参考价格
+        required: true
+      fraction:
+        description: 使用现金或卖出当前仓位的比例（0-1）
+        required: true
+        default: "1.0"
+      stage:
+        description: 风控阶段 stop1/stop2/take1/take2（普通交易留空）
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 记录人工确认的模拟成交
+        env:
+          SIDE: ${{ inputs.side }}
+          CODE: ${{ inputs.code }}
+          STOCK_NAME: ${{ inputs.name }}
+          PRICE: ${{ inputs.price }}
+          FRACTION: ${{ inputs.fraction }}
+          STAGE: ${{ inputs.stage }}
+        run: python scripts/paper_trade.py --side "$SIDE" --code "$CODE" --name "$STOCK_NAME" --price "$PRICE" --fraction "$FRACTION" --stage "$STAGE"
+      - name: 保存模拟账本
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add data/paper_state.json
+          git commit -m "paper: ${{ inputs.side }} ${{ inputs.code }}"
+          git push
