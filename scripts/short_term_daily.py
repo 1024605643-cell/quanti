@@ -58,7 +58,7 @@ def _spot() -> pd.DataFrame:
         frame = ak.stock_zh_a_spot_tx().copy()
         frame["代码"] = frame["code"].astype(str).str[-6:]
         frame["名称"] = frame["name"]
-        frame["最新价"] = pd.to_numeric(frame["zxj"], errors="coerce") / 100
+        frame["最新价"] = pd.to_numeric(frame["zxj"], errors="coerce")
         frame["涨跌幅"] = pd.to_numeric(frame["zdf"], errors="coerce")
         frame["换手率"] = pd.to_numeric(frame["hsl"], errors="coerce")
         frame["5日涨跌幅"] = pd.to_numeric(frame["zdf_d5"], errors="coerce")
@@ -85,6 +85,8 @@ def _score(row: pd.Series, bars: pd.DataFrame) -> tuple[float, list[str], list[s
     upper_shadow = (_number(latest["high"]) - max(_number(latest["open"]),
                     _number(latest["close"]))) / max(_number(latest["close"]), 0.01)
     avg_amount20 = bars["amount"].astype(float).tail(20).mean()
+    daily_change = _number(row.get("涨跌幅"))
+    limit_threshold = 19.5 if str(row.get("代码", "")).startswith(("30", "68")) else 9.5
 
     if avg_amount20 < CONFIG["min_daily_amount"]:
         rejects.append("20日平均成交额不足5亿元")
@@ -94,6 +96,8 @@ def _score(row: pd.Series, bars: pd.DataFrame) -> tuple[float, list[str], list[s
         rejects.append("高开超过7%")
     if upper_shadow > CONFIG["max_upper_shadow"]:
         rejects.append("长上影线超过6%")
+    if daily_change >= limit_threshold:
+        rejects.append("当日接近或已涨停，无法按计划成交")
     if (close.pct_change().tail(4) > 0.095).sum() >= 2:
         rejects.append("近期多次接近涨停")
     if rejects:
