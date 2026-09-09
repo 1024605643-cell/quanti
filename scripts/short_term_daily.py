@@ -155,7 +155,7 @@ def scan() -> tuple[list[dict], list[dict]]:
     pool["pre_score"] = change * 2 + gain5 + turnover * 0.5 + amount_rank * 5
     # Historical requests are the slow part. A broad realtime pre-rank keeps
     # the strongest liquid names while fitting comfortably in Actions.
-    pool = pool.sort_values("pre_score", ascending=False).head(50)
+    pool = pool.sort_values("pre_score", ascending=False).head(80)
     today = date.today()
     start = (today - timedelta(days=130)).strftime("%Y%m%d")
     end = today.strftime("%Y%m%d")
