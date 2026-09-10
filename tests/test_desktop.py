@@ -68,3 +68,32 @@ def test_windows_settings_encrypted_at_rest(tmp_path):
     save_settings(values, tmp_path)
     assert b'TEST-NOT-A-REAL-SECRET' not in (tmp_path / 'settings.dpapi').read_bytes()
     assert load_settings(tmp_path) == values
+
+
+def test_settings_form_preserves_saved_values_during_startup(tmp_path):
+    import tkinter as tk
+    from quanti.desktop import App
+    from quanti.desktop_settings import load_settings, save_settings
+    values = {'LLM_PRIMARY_API_KEY': 'DEMO-ONLY', 'WENCAI_COOKIE': 'DEMO-COOKIE'}
+    save_settings(values, tmp_path)
+    root = tk.Tk()
+    root.withdraw()
+    app = App(root, tmp_path)
+    try:
+        app.save_settings()  # Controls must not overwrite settings before async initialization.
+        assert load_settings(tmp_path) == values
+        deadline = time.monotonic() + 15
+        while app.engine is None and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.02)
+        assert app.engine is not None
+        assert all(app.fields[k].get() == v for k, v in values.items())
+        assert app.field_status['WENCAI_COOKIE'].get() == '已保存'
+        assert app.field_status['EMAIL_PASSWORD'].get() == '未配置'
+        app.select_page(4)
+        app.reload_settings()
+        assert app.fields['LLM_PRIMARY_API_KEY'].get() == 'DEMO-ONLY'
+    finally:
+        if app.engine:
+            app.engine.close()
+        root.destroy()
