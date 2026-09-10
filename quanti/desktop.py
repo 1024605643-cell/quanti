@@ -142,10 +142,11 @@ class Engine:
                     self.events.put(('status', '本机正在选股，可能需几分钟；模拟交易仍独立运行。'))
                     for key, value in self.settings.items():
                         os.environ[key] = value
-                    from scripts.short_term_daily import scan, ai_review
-                    candidates, rejected = scan()
+                    from scripts import short_term_daily as research
+                    candidates, rejected = research.scan()
                     report = dict(generated_at=datetime.now(BEIJING).isoformat(), candidates=candidates,
-                                  rejected=rejected, ai_review=ai_review(candidates), alerts=self.snapshot().get('alerts', []))
+                                  rejected=rejected, ai_review=research.ai_review(candidates),
+                                  wencai_status=research.WENCAI_STATUS, alerts=self.snapshot().get('alerts', []))
                 else:
                     with urlopen(REPORT_URL, timeout=12) as r:
                         report = json.load(r)
@@ -305,6 +306,7 @@ class App:
             self.candidate_tree.insert('', 'end', values=(c['code'], c['name'], c['score'], c['price'], '、'.join(c.get('reasons', []))))
         self.report_text.delete('1.0', 'end')
         self.report_text.insert('end', '报告时间：' + report.get('generated_at', '未知') + '\n公告新闻尚未完整核验，历史回测尚未完成。\n\n' + report.get('ai_review', '') + '\n\n未入选原因：\n')
+        self.report_text.insert('1.0', '问财状态：' + report.get('wencai_status', '此份旧报告未记录接口状态') + '\n')
         for c in report.get('rejected', []):
             self.report_text.insert('end', str(c.get('code', '')) + ' ' + c.get('name', '') + '：' + '、'.join(c.get('rejects') or [c.get('why', '')]) + '\n')
 
@@ -397,7 +399,13 @@ def main():
             quote = fetch_snapshot('603083')
             result.update(quote_ms=round((time.perf_counter()-started)*1000, 2), quote_time=quote['time'])
             write_json(Path(args.diagnostics_file), result)
+            from quanti.wencai_client import configure_runtime
+            configure_runtime()
+            import importlib
+            result['wencai_token_generated'] = bool(importlib.import_module('pywencai.headers').get_token())
             result['wencai_stock_count'] = len(_wencai_codes())
+            from scripts.short_term_daily import WENCAI_STATUS
+            result['wencai_status'] = WENCAI_STATUS
         except Exception as exc:
             result['error_type'] = type(exc).__name__
         write_json(Path(args.diagnostics_file), result)

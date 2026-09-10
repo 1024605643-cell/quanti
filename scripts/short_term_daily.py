@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import html
 import contextlib
 import io
 import math
@@ -23,6 +24,7 @@ CONFIG = json.loads((ROOT / "config" / "short_term.json").read_text(encoding="ut
 OUT = ROOT / "docs" / "quant"
 STATE_FILE = ROOT / "data" / "paper_state.json"
 PREFER_SINA = False
+WENCAI_STATUS = '尚未查询'
 BEIJING = timezone(timedelta(hours=8))
 
 
@@ -125,24 +127,32 @@ def _score(row: pd.Series, bars: pd.DataFrame) -> tuple[float, list[str], list[s
 
 
 def _wencai_codes() -> set[str]:
+    global WENCAI_STATUS
+    WENCAI_STATUS = '问财未返回可用数据，未参与本次加分'
     cookie = os.getenv("WENCAI_COOKIE", "")
     if not cookie:
+        WENCAI_STATUS = '问财Cookie未配置，未参与本次加分'
         return set()
     try:
+        from quanti.wencai_client import configure_runtime
+        configure_runtime()
         import pywencai
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             result = pywencai.get(
                 query="A股，非ST，上市超过180天，20日平均成交额大于5亿元，近10日涨幅小于25%，近20日涨幅小于40%，今日放量上涨",
-                cookie=cookie, loop=1, retry=2)
+                cookie=cookie, loop=1, retry=1)
         if not isinstance(result, pd.DataFrame) or result.empty:
-            return set()
+            raise ValueError('No usable Wencai result')
         for column in result.columns:
             if '股票代码' not in str(column) and str(column) != 'code':
                 continue
             values = result[column].astype(str).str.extract(r"^(\d{6})(?:\.[A-Za-z]+)?$", expand=False).dropna()
             if not values.empty:
+                WENCAI_STATUS = f'问财返回{len(set(values))}只条件匹配股票，已用于加分'
                 return set(values)
     except Exception as exc:
+        from quanti.wencai_client import last_error
+        WENCAI_STATUS = last_error or WENCAI_STATUS
         print(f"wencai unavailable: {type(exc).__name__}")
     return set()
 
@@ -224,6 +234,7 @@ def render(report: dict) -> str:
     rejected = "".join(f"<li>{x['code']} {x['name']}：{'、'.join(x.get('rejects') or [x.get('why','')])}</li>" for x in report["rejected"])
     alerts = "".join(f"<li>{x['code']}：{x['why']}（需人工确认）</li>" for x in report["alerts"]) or "<li>无</li>"
     review = str(report["ai_review"]).replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>")
+    review = '问财状态：' + html.escape(report.get('wencai_status', '旧报告未记录接口状态')) + '<br><br>' + review
     return f"""<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width'><title>A股短线量化</title><style>body{{font:16px system-ui;max-width:1100px;margin:auto;padding:24px;background:#f5f7fa;color:#172033}}table{{width:100%;border-collapse:collapse;background:white}}th,td{{padding:10px;border-bottom:1px solid #ddd;text-align:left}}.card{{background:white;padding:18px;margin:16px 0;border-radius:12px}}small{{color:#667}}</style><h1>A股短线量化看板</h1><small>更新时间 {report['generated_at']}｜量化排名用于研究与模拟，不保证未来收益</small><div class='card'><h2>候选排名（前5为主推）</h2><table><tr><th>#</th><th>股票</th><th>分数</th><th>价格</th><th>涨跌</th><th>量价理由</th></tr>{rows}</table></div><div class='card'><h2>GPT-6 风控复核</h2><p>{review}</p></div><div class='card'><h2>云端账本风控提醒（本机持仓请在软件查看）</h2><ul>{alerts}</ul></div><div class='card'><h2>为什么没入选</h2><ul>{rejected}</ul></div>"""
 
 
@@ -266,13 +277,14 @@ def main() -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     report = {"generated_at": datetime.now(BEIJING).isoformat(timespec="seconds"),
               "candidates": candidates, "rejected": rejected, "alerts": alerts,
-              "paper": state, "ai_review": ai_review(candidates)}
+              "paper": state, "ai_review": ai_review(candidates), "wencai_status": WENCAI_STATUS}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "latest.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     html = render(report)
     html = html.replace('<h1>A股短线量化看板</h1>', '<h1>A股短线量化看板</h1><p><a href="../trade/">查看模拟账户 / 买卖操作说明</a></p>', 1)
     (OUT / "index.html").write_text(html, encoding="utf-8")
     top = "\n".join(f"{i+1}. {x['code']} {x['name']} {x['score']:.1f}分" for i, x in enumerate(candidates[:5]))
+    top += '\n' + WENCAI_STATUS
     action_url = os.getenv("CONFIRM_URL", "")
     details = '\n'.join(f"{a['code']}：{a['why']}，建议卖出{a['fraction']:.0%}当前仓位" for a in alerts) or '暂无持仓风控提醒'
     notify_wecom(f"A股短线量化候选\n{top}\n{details}\n查看账户与提交方法：{action_url}\n请在Windows本机软件中确认模拟买卖，不再使用Run workflow。本机持仓与风险请以软件和本机回执为准。公告新闻风险尚未完整核验。")

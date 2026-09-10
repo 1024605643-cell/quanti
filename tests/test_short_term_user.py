@@ -181,5 +181,18 @@ def test_wencai_uses_code_column_not_unrelated_six_digit_number(monkeypatch):
 
     result = pd.DataFrame({'成交额': ['987654321'], '股票代码': ['002384.SZ']})
     monkeypatch.setenv('WENCAI_COOKIE', 'test-only')
+    monkeypatch.setattr('quanti.wencai_client.configure_runtime', lambda: None)
     monkeypatch.setitem(sys.modules, 'pywencai', SimpleNamespace(get=lambda **kw: result))
     assert _wencai_codes() == {'002384'}
+
+
+def test_wencai_denied_is_visible_and_does_not_approve_candidates(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from scripts import short_term_daily as research
+    monkeypatch.setenv('WENCAI_COOKIE', 'test-only')
+    monkeypatch.setattr('quanti.wencai_client.configure_runtime', lambda: None)
+    monkeypatch.setattr('quanti.wencai_client.last_error', '问财接口拒绝请求（HTTP 403），未参与本次加分')
+    monkeypatch.setitem(sys.modules, 'pywencai', SimpleNamespace(get=lambda **kw: None))
+    assert research._wencai_codes() == set()
+    assert 'HTTP 403' in research.WENCAI_STATUS
