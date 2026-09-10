@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import contextlib
+import io
 import math
 import os
 import smtplib
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -19,6 +21,7 @@ CONFIG = json.loads((ROOT / "config" / "short_term.json").read_text(encoding="ut
 OUT = ROOT / "docs" / "quant"
 STATE_FILE = ROOT / "data" / "paper_state.json"
 PREFER_SINA = False
+BEIJING = timezone(timedelta(hours=8))
 
 
 def _number(value, default=0.0) -> float:
@@ -125,17 +128,20 @@ def _wencai_codes() -> set[str]:
         return set()
     try:
         import pywencai
-        result = pywencai.get(
-            query="A股，非ST，上市超过180天，20日平均成交额大于5亿元，近10日涨幅小于25%，近20日涨幅小于40%，今日放量上涨",
-            cookie=cookie, loop=1, retry=2)
-        if result is None or result.empty:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            result = pywencai.get(
+                query="A股，非ST，上市超过180天，20日平均成交额大于5亿元，近10日涨幅小于25%，近20日涨幅小于40%，今日放量上涨",
+                cookie=cookie, loop=1, retry=2)
+        if not isinstance(result, pd.DataFrame) or result.empty:
             return set()
         for column in result.columns:
-            values = result[column].astype(str).str.extract(r"(\d{6})", expand=False).dropna()
+            if '股票代码' not in str(column) and str(column) != 'code':
+                continue
+            values = result[column].astype(str).str.extract(r"^(\d{6})(?:\.[A-Za-z]+)?$", expand=False).dropna()
             if not values.empty:
                 return set(values)
     except Exception as exc:
-        print(f"wencai unavailable: {exc}")
+        print(f"wencai unavailable: {type(exc).__name__}")
     return set()
 
 
@@ -187,7 +193,8 @@ def ai_review(candidates: list[dict]) -> str:
     base = os.getenv("LLM_PRIMARY_BASE_URL", "https://api.3366.ai/v1").rstrip("/")
     model = os.getenv("LLM_PRIMARY_MODEL", "gpt-6-astra")
     prompt = ("你是A股短线风控复核员。量化排名已经完成，你只解释和指出风险，"
-              "不得重排或承诺收益。逐只简短说明追高、公告、业绩和市场环境风险：\n" +
+              "不得重排或承诺收益。只解释输入的量价指标。当前未提供新闻、公告、业绩或市场环境证据，"
+              "这些项目必须写未核验，禁止推测具体事件或宣称风控通过：\n" +
               json.dumps(candidates[:5], ensure_ascii=False))
     body = json.dumps({"model": model, "input": prompt, "max_output_tokens": 1200},
                       ensure_ascii=False).encode()
@@ -210,7 +217,8 @@ def _load_state() -> dict:
     return {"cash": CONFIG["capital"], "positions": {}, "trades": []}
 
 
-def review_positions(state: dict, prices: dict[str, float]) -> list[dict]:
+def review_positions(state: dict, prices: dict[str, float], now=None) -> list[dict]:
+    now = now or datetime.now(BEIJING)
     alerts = []
     for code, pos in state.get("positions", {}).items():
         price = prices.get(code)
@@ -221,6 +229,8 @@ def review_positions(state: dict, prices: dict[str, float]) -> list[dict]:
         done = set(pos.get("exit_stages", []))
         if pnl <= -0.05:
             alerts.append({"code": code, "action": "sell", "fraction": 1.0, "why": "-5%硬止损"})
+        elif (now.date() - datetime.fromisoformat(pos["bought_at"]).date()).days >= 14:
+            alerts.append({"code": code, "action": "sell", "fraction": 1.0, "why": "持有已满两周，退出提醒"})
         elif pnl <= -0.025 and "stop2" not in done:
             alerts.append({"code": code, "action": "sell", "fraction": 0.5, "why": "-2.5%减当前仓位50%", "stage": "stop2"})
         elif pnl <= -0.0125 and "stop1" not in done:
@@ -247,8 +257,10 @@ def notify_wecom(text: str) -> None:
     if not url:
         return
     payload = json.dumps({"msgtype": "text", "text": {"content": text}}, ensure_ascii=False).encode()
-    with urlopen(Request(url, data=payload, headers={"Content-Type": "application/json"}), timeout=20):
-        pass
+    with urlopen(Request(url, data=payload, headers={"Content-Type": "application/json"}), timeout=20) as response:
+        result = json.load(response)
+    if result.get("errcode") != 0:
+        raise RuntimeError(f"WeCom rejected notification: {result.get('errcode')}")
 
 
 def notify_email(subject: str, html: str) -> None:
@@ -257,9 +269,12 @@ def notify_email(subject: str, html: str) -> None:
         return
     msg = MIMEText(html, "html", "utf-8")
     msg["Subject"], msg["From"], msg["To"] = subject, sender, sender
-    with smtplib.SMTP_SSL("smtp.qq.com", 465, timeout=30) as smtp:
+    smtp = smtplib.SMTP_SSL("smtp.qq.com", 465, timeout=30)
+    try:
         smtp.login(sender, password)
         smtp.sendmail(sender, [sender], msg.as_string())
+    finally:
+        smtp.close()
 
 
 def main() -> None:
@@ -273,16 +288,19 @@ def main() -> None:
             if not match.empty:
                 prices[code] = _number(match.iloc[0]["最新价"])
     alerts = review_positions(state, prices)
-    report = {"generated_at": datetime.now().isoformat(timespec="seconds"),
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    report = {"generated_at": datetime.now(BEIJING).isoformat(timespec="seconds"),
               "candidates": candidates, "rejected": rejected, "alerts": alerts,
               "paper": state, "ai_review": ai_review(candidates)}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "latest.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     html = render(report)
+    html = html.replace('<h1>A股短线量化看板</h1>', '<h1>A股短线量化看板</h1><p><a href="../trade/">查看模拟账户 / 买卖操作说明</a></p>', 1)
     (OUT / "index.html").write_text(html, encoding="utf-8")
     top = "\n".join(f"{i+1}. {x['code']} {x['name']} {x['score']:.1f}分" for i, x in enumerate(candidates[:5]))
     action_url = os.getenv("CONFIRM_URL", "")
-    notify_wecom(f"A股短线量化主推\n{top}\n风控提醒：{len(alerts)}条\n确认模拟交易：{action_url}")
+    details = '\n'.join(f"{a['code']}：{a['why']}，建议卖出{a['fraction']:.0%}当前仓位" for a in alerts) or '暂无持仓风控提醒'
+    notify_wecom(f"A股短线量化候选\n{top}\n{details}\n查看账户与提交方法：{action_url}\n首次使用请在手机浏览器登录GitHub，再点Run workflow。买卖均为模拟，需你确认。公告新闻风险尚未完整核验。")
     notify_email("A股短线量化日报", html)
 
 

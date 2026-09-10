@@ -19,6 +19,7 @@ back to the queue: a fill can never happen at a previous day's price.
 from __future__ import annotations
 
 import time
+import math
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -51,6 +52,35 @@ def _qt_symbol(code: str) -> str:
     if code[:2] in ("43", "83", "87", "92"):
         return "bj" + code  # 北交所
     return ("sh" if code[0] in "69" else "sz") + code
+
+
+def parse_snapshot(text: str, code: str) -> dict:
+    """Timestamp and book required for paper fills; malformed data fails closed."""
+    for line in text.splitlines():
+        p = line.split("~")
+        if len(p) < 49 or p[2] != code:
+            continue
+        quote = {key: float(p[index]) for key, index in {
+            "price": 3, "previous_close": 4, "volume": 6,
+            "bid": 9, "bid_lots": 10, "ask": 19, "ask_lots": 20,
+            "limit_up": 47, "limit_down": 48}.items()}
+        if not all(math.isfinite(v) and v >= 0 for v in quote.values()):
+            raise ValueError("Invalid quote numbers")
+        if not 0 < quote["limit_down"] < quote["limit_up"]:
+            raise ValueError("Missing price limits")
+        quote.update(code=code, name=p[1], source="Tencent",
+                     time=datetime.strptime(p[30], "%Y%m%d%H%M%S").replace(
+                         tzinfo=_BEIJING).isoformat())
+        return quote
+    raise ValueError("No matching stock quote")
+
+
+def fetch_snapshot(code: str) -> dict:
+    if len(code) != 6 or not code.isascii() or not code.isdigit():
+        raise ValueError("Invalid stock code")
+    req = urllib.request.Request(_URL + _qt_symbol(code), headers={"User-Agent": _UA})
+    with _OPENER.open(req, timeout=10) as response:
+        return parse_snapshot(response.read().decode("gbk"), code)
 
 
 def _parse(text: str, require_date: str | None = None) -> dict[str, float]:

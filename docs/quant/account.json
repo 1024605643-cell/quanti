@@ -1,0 +1,10 @@
+{
+  "cash": 100000,
+  "positions": {},
+  "trades": [],
+  "equity": 100000,
+  "return_pct": 0.0,
+  "max_drawdown_pct": 0.0,
+  "updated_at": "2026-09-10T13:51:32.322265+08:00",
+  "orders": []
+}

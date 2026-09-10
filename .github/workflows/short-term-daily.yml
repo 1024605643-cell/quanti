@@ -11,8 +11,9 @@ permissions:
   contents: write
 
 concurrency:
-  group: short-term-daily
+  group: quanti-ledger
   cancel-in-progress: false
+  queue: max
 
 jobs:
   screen:
@@ -26,9 +27,11 @@ jobs:
       LLM_PRIMARY_API_KEY: ${{ secrets.LLM_PRIMARY_API_KEY }}
       LLM_PRIMARY_BASE_URL: ${{ vars.LLM_PRIMARY_BASE_URL }}
       LLM_PRIMARY_MODEL: ${{ vars.LLM_PRIMARY_MODEL }}
-      CONFIRM_URL: https://github.com/${{ github.repository }}/actions/workflows/paper-trade.yml
+      CONFIRM_URL: https://1024605643-cell.github.io/quanti/trade/
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

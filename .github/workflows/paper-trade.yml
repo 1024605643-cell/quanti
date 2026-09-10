@@ -4,51 +4,77 @@ on:
   workflow_dispatch:
     inputs:
       side:
-        description: 买入 buy / 卖出 sell
+        description: 操作（检查连接不会交易）
         required: true
         type: choice
-        options: [buy, sell]
+        options: [买入, 卖出, 撤销待成交委托, 仅检查连接]
       code:
-        description: 六位股票代码
-        required: true
-      name:
-        description: 股票名称（可空）
+        description: 六位股票代码（检查连接可留空）
         required: false
-      price:
-        description: 确认时参考价格
-        required: true
       fraction:
-        description: 使用现金或卖出当前仓位的比例（0-1）
+        description: 买入用可用现金比例；卖出用当前股数比例
         required: true
-        default: "1.0"
-      stage:
-        description: 风控阶段 stop1/stop2/take1/take2（普通交易留空）
-        required: false
+        type: choice
+        options: ["50%", "25%", "100%"]
+        default: "50%"
+  schedule:
+    - cron: "35 1 * * 1-5"
+    - cron: "5,35 2 * * 1-5"
+    - cron: "5 3 * * 1-5"
+    - cron: "5,35 5-6 * * 1-5"
 
 permissions:
   contents: write
 
+concurrency:
+  group: quanti-ledger
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   record:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.actor == github.repository_owner)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 记录人工确认的模拟成交
+      - run: pip install -e .
+      - name: 提交委托并检查可成交行情
         env:
           SIDE: ${{ inputs.side }}
           CODE: ${{ inputs.code }}
-          STOCK_NAME: ${{ inputs.name }}
-          PRICE: ${{ inputs.price }}
           FRACTION: ${{ inputs.fraction }}
-          STAGE: ${{ inputs.stage }}
-        run: python scripts/paper_trade.py --side "$SIDE" --code "$CODE" --name "$STOCK_NAME" --price "$PRICE" --fraction "$FRACTION" --stage "$STAGE"
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python - <<'PY'
+          import os, subprocess, sys
+          side = 'monitor' if os.environ['EVENT_NAME'] == 'schedule' else {
+              '买入': 'buy', '卖出': 'sell', '撤销待成交委托': 'cancel', '仅检查连接': 'check'
+          }[os.environ['SIDE']]
+          fraction = {'25%': '0.25', '50%': '0.5', '100%': '1'}[os.environ.get('FRACTION') or '50%']
+          subprocess.run([sys.executable, '-m', 'scripts.paper_trade', '--side', side,
+                          '--code', os.environ.get('CODE', ''), '--fraction', fraction], check=True)
+          PY
       - name: 保存模拟账本
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add data/paper_state.json
-          git commit -m "paper: ${{ inputs.side }} ${{ inputs.code }}"
+          git add data/paper_state.json docs/quant
+          git diff --cached --quiet || git commit -m "paper: update confirmed orders and account"
           git push
+      - name: 发送企业微信回执
+        env:
+          WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from scripts.short_term_daily import notify_wecom
+          receipt = Path('paper_receipt.txt')
+          if receipt.exists():
+              notify_wecom(receipt.read_text(encoding='utf-8') + '\n操作与账户：https://1024605643-cell.github.io/quanti/trade/')
+          PY
