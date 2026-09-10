@@ -380,6 +380,16 @@ def _mk_broker(db, provider, quote_fn):
 
 
 def _in_session(monkeypatch, value: bool):
+    from datetime import datetime
+
+    class SessionClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz).replace(hour=13, minute=5, second=0, microsecond=0)
+
+    # Session scenarios also need a matching decision time: before 09:30,
+    # order attribution deliberately belongs to the previous trading day.
+    monkeypatch.setattr('quanti.execution.paper_broker.datetime', SessionClock)
     monkeypatch.setattr("quanti.utils.market.in_trading_session",
                         lambda *a, **k: value)
 
