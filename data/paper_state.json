@@ -1,5 +1,31 @@
 {
   "cash": 100000,
   "positions": {},
-  "trades": []
+  "trades": [],
+  "orders": [
+    {
+      "id": "34443039915",
+      "side": "buy",
+      "code": "603083",
+      "fraction": 0.5,
+      "budget": 50000.0,
+      "quantity": 0,
+      "created_at": "2026-09-10T13:56:18.911165+08:00",
+      "expires_at": "2026-09-11T13:56:18.911165+08:00",
+      "status": "pending",
+      "reason": "行情过期、停牌或尚无确认后的新成交"
+    }
+  ],
+  "updated_at": "2026-09-10T13:56:20.350732+08:00",
+  "missing_marks": [],
+  "equity": 100000,
+  "return_pct": 0.0,
+  "alerts": [],
+  "equity_history": [
+    {
+      "time": "2026-09-10T13:56:20.350732+08:00",
+      "equity": 100000
+    }
+  ],
+  "max_drawdown_pct": 0
 }
