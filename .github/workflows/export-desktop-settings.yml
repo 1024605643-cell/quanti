@@ -1,0 +1,40 @@
+name: Export encrypted desktop settings
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  export:
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pynacl==1.6.2
+      - name: Seal settings for this Windows user
+        env:
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER }}
+          LLM_PRIMARY_API_KEY: ${{ secrets.LLM_PRIMARY_API_KEY }}
+          LLM_PRIMARY_BASE_URL: ${{ vars.LLM_PRIMARY_BASE_URL }}
+          LLM_PRIMARY_MODEL: ${{ vars.LLM_PRIMARY_MODEL }}
+          WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
+          WENCAI_COOKIE: ${{ secrets.WENCAI_COOKIE }}
+        run: |
+          python - <<'PY'
+          import base64, json, os
+          from pathlib import Path
+          from nacl.public import PublicKey, SealedBox
+          keys = ['EMAIL_PASSWORD','EMAIL_SENDER','LLM_PRIMARY_API_KEY','LLM_PRIMARY_BASE_URL',
+                  'LLM_PRIMARY_MODEL','WECOM_WEBHOOK_URL','WENCAI_COOKIE']
+          payload = json.dumps({k:os.environ.get(k,'') for k in keys}).encode()
+          key = PublicKey(base64.b64decode('tmoBEiy4VJW/2WxDDixBXS12v4Sq/q5I1VqE1Jtw51Y='))
+          Path('desktop-settings.sealed').write_bytes(SealedBox(key).encrypt(payload))
+          print('SETTINGS_SEALED')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-settings-sealed
+          path: desktop-settings.sealed
+          retention-days: 1
