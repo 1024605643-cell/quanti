@@ -16,6 +16,8 @@ from urllib.request import Request, urlopen
 import akshare as ak
 import pandas as pd
 
+from quanti.risk.short_term_rules import review_positions
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = json.loads((ROOT / "config" / "short_term.json").read_text(encoding="utf-8"))
 OUT = ROOT / "docs" / "quant"
@@ -217,39 +219,12 @@ def _load_state() -> dict:
     return {"cash": CONFIG["capital"], "positions": {}, "trades": []}
 
 
-def review_positions(state: dict, prices: dict[str, float], now=None) -> list[dict]:
-    now = now or datetime.now(BEIJING)
-    alerts = []
-    for code, pos in state.get("positions", {}).items():
-        price = prices.get(code)
-        if not price:
-            continue
-        pnl = price / pos["avg_cost"] - 1
-        pos["peak"] = max(pos.get("peak", pos["avg_cost"]), price)
-        done = set(pos.get("exit_stages", []))
-        if pnl <= -0.05:
-            alerts.append({"code": code, "action": "sell", "fraction": 1.0, "why": "-5%硬止损"})
-        elif (now.date() - datetime.fromisoformat(pos["bought_at"]).date()).days >= 14:
-            alerts.append({"code": code, "action": "sell", "fraction": 1.0, "why": "持有已满两周，退出提醒"})
-        elif pnl <= -0.025 and "stop2" not in done:
-            alerts.append({"code": code, "action": "sell", "fraction": 0.5, "why": "-2.5%减当前仓位50%", "stage": "stop2"})
-        elif pnl <= -0.0125 and "stop1" not in done:
-            alerts.append({"code": code, "action": "sell", "fraction": 0.25, "why": "-1.25%减仓25%", "stage": "stop1"})
-        elif pnl >= 0.06 and "take2" not in done:
-            alerts.append({"code": code, "action": "sell", "fraction": 0.5, "why": "+6%减当前仓位50%", "stage": "take2"})
-        elif pnl >= 0.03 and "take1" not in done:
-            alerts.append({"code": code, "action": "sell", "fraction": 0.25, "why": "+3%止盈25%", "stage": "take1"})
-        elif "take2" in done and price / pos["peak"] - 1 <= -0.03:
-            alerts.append({"code": code, "action": "sell", "fraction": 1.0, "why": "峰值回撤3%清仓"})
-    return alerts
-
-
 def render(report: dict) -> str:
     rows = "".join(f"<tr><td>{i+1}</td><td>{x['code']} {x['name']}</td><td>{x['score']:.1f}</td><td>{x['price']:.2f}</td><td>{x['change']:+.2f}%</td><td>{'、'.join(x['reasons'])}</td></tr>" for i, x in enumerate(report["candidates"]))
     rejected = "".join(f"<li>{x['code']} {x['name']}：{'、'.join(x.get('rejects') or [x.get('why','')])}</li>" for x in report["rejected"])
     alerts = "".join(f"<li>{x['code']}：{x['why']}（需人工确认）</li>" for x in report["alerts"]) or "<li>无</li>"
     review = str(report["ai_review"]).replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>")
-    return f"""<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width'><title>A股短线量化</title><style>body{{font:16px system-ui;max-width:1100px;margin:auto;padding:24px;background:#f5f7fa;color:#172033}}table{{width:100%;border-collapse:collapse;background:white}}th,td{{padding:10px;border-bottom:1px solid #ddd;text-align:left}}.card{{background:white;padding:18px;margin:16px 0;border-radius:12px}}small{{color:#667}}</style><h1>A股短线量化看板</h1><small>更新时间 {report['generated_at']}｜量化排名用于研究与模拟，不保证未来收益</small><div class='card'><h2>候选排名（前5为主推）</h2><table><tr><th>#</th><th>股票</th><th>分数</th><th>价格</th><th>涨跌</th><th>量价理由</th></tr>{rows}</table></div><div class='card'><h2>GPT-6 风控复核</h2><p>{review}</p></div><div class='card'><h2>持仓风控提醒</h2><ul>{alerts}</ul></div><div class='card'><h2>为什么没入选</h2><ul>{rejected}</ul></div>"""
+    return f"""<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width'><title>A股短线量化</title><style>body{{font:16px system-ui;max-width:1100px;margin:auto;padding:24px;background:#f5f7fa;color:#172033}}table{{width:100%;border-collapse:collapse;background:white}}th,td{{padding:10px;border-bottom:1px solid #ddd;text-align:left}}.card{{background:white;padding:18px;margin:16px 0;border-radius:12px}}small{{color:#667}}</style><h1>A股短线量化看板</h1><small>更新时间 {report['generated_at']}｜量化排名用于研究与模拟，不保证未来收益</small><div class='card'><h2>候选排名（前5为主推）</h2><table><tr><th>#</th><th>股票</th><th>分数</th><th>价格</th><th>涨跌</th><th>量价理由</th></tr>{rows}</table></div><div class='card'><h2>GPT-6 风控复核</h2><p>{review}</p></div><div class='card'><h2>云端账本风控提醒（本机持仓请在软件查看）</h2><ul>{alerts}</ul></div><div class='card'><h2>为什么没入选</h2><ul>{rejected}</ul></div>"""
 
 
 def notify_wecom(text: str) -> None:
@@ -300,7 +275,7 @@ def main() -> None:
     top = "\n".join(f"{i+1}. {x['code']} {x['name']} {x['score']:.1f}分" for i, x in enumerate(candidates[:5]))
     action_url = os.getenv("CONFIRM_URL", "")
     details = '\n'.join(f"{a['code']}：{a['why']}，建议卖出{a['fraction']:.0%}当前仓位" for a in alerts) or '暂无持仓风控提醒'
-    notify_wecom(f"A股短线量化候选\n{top}\n{details}\n查看账户与提交方法：{action_url}\n首次使用请在手机浏览器登录GitHub，再点Run workflow。买卖均为模拟，需你确认。公告新闻风险尚未完整核验。")
+    notify_wecom(f"A股短线量化候选\n{top}\n{details}\n查看账户与提交方法：{action_url}\n请在Windows本机软件中确认模拟买卖，不再使用Run workflow。本机持仓与风险请以软件和本机回执为准。公告新闻风险尚未完整核验。")
     notify_email("A股短线量化日报", html)
 
 

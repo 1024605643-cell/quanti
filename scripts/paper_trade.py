@@ -37,8 +37,11 @@ def submit(state, side, code, fraction, order_id, now):
         orders.append(dict(id=order_id, side=side, code=code, status="cancelled",
                            created_at=now.isoformat(), reason="已处理撤单请求"))
         return
-    if any(o["code"] == code for o in pending):
-        raise ValueError("该股票已有待成交委托，请等待或先撤单")
+    for order in pending:
+        if order["code"] == code:
+            if order["side"] == side and order["fraction"] == fraction:
+                return order
+            raise ValueError("该股票已有不同的待成交委托，请先撤单")
     positions = state["positions"]
     if side == "buy":
         codes = set(positions) | {o["code"] for o in pending if o["side"] == "buy"} | {code}
@@ -66,10 +69,12 @@ def match_order(state, order, quote, now):
         order["reason"] = "行情不可用，保留待成交"
         return
     qt = datetime.fromisoformat(quote["time"])
-    if (qt <= datetime.fromisoformat(order["created_at"])
-            or not 0 <= (now - qt).total_seconds() <= 90
+    if qt <= datetime.fromisoformat(order["created_at"]):
+        order["reason"] = "等待确认后的下一笔新行情（尚未成交）"
+        return
+    if (not 0 <= (now - qt).total_seconds() <= 90
             or qt.date() != now.date() or not is_market_open(qt) or quote["volume"] <= 0):
-        order["reason"] = "行情过期、停牌或尚无确认后的新成交"
+        order["reason"] = "行情时间或成交量未通过检查，暂不模拟成交"
         return
     side, code = order["side"], order["code"]
     positions = state["positions"]
@@ -177,7 +182,7 @@ def refresh(state, now=None, fetch=fetch_snapshot):
     state.update(updated_at=now.isoformat(), missing_marks=missing,
                  equity=None if missing else round(equity, 2),
                  return_pct=None if missing else round((equity / CONFIG["capital"] - 1) * 100, 4))
-    from scripts.short_term_daily import review_positions
+    from quanti.risk.short_term_rules import review_positions
     state["alerts"] = review_positions(state, {c: q["price"] for c, q in quotes.items()
         if datetime.fromisoformat(q["time"]).date() == now.date()}, now)
     if not missing:

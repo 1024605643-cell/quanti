@@ -40,7 +40,7 @@ jobs:
         with:
           node-version: "20"
       - run: pip install akshare pandas pywencai
-      - run: python scripts/short_term_daily.py
+      - run: python -m scripts.short_term_daily
       - uses: actions/upload-artifact@v4
         with:
           name: short-term-report-${{ github.run_number }}
