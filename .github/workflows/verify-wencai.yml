@@ -1,0 +1,49 @@
+name: Verify Wencai connection
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: pip install pywencai
+      - name: Verify stock data without logging credentials
+        env:
+          WENCAI_COOKIE: ${{ secrets.WENCAI_COOKIE }}
+        run: |
+          python - <<'PY'
+          import contextlib, io, os, re
+          import pandas as pd
+          import pywencai
+
+          if not os.environ.get('WENCAI_COOKIE'):
+              raise SystemExit('WENCAI_SECRET_MISSING')
+          try:
+              # Third-party output may contain request headers; never print it.
+              with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                  result = pywencai.get(
+                      query='A股，非ST，上市超过180天，20日平均成交额大于5亿元，近10日涨幅小于25%，近20日涨幅小于40%，今日放量上涨',
+                      cookie=os.environ['WENCAI_COOKIE'], loop=1, retry=1)
+          except Exception as exc:
+              raise SystemExit('WENCAI_QUERY_FAILED: ' + type(exc).__name__) from None
+          if not isinstance(result, pd.DataFrame):
+              raise SystemExit('WENCAI_NO_STOCK_TABLE: ' + type(result).__name__)
+          columns = [c for c in result.columns if '股票代码' in str(c) or str(c) == 'code']
+          if not columns:
+              raise SystemExit('WENCAI_STOCK_CODE_COLUMN_MISSING')
+          codes = result[columns[0]].astype(str).str.extract(r'^(\d{6})(?:\.[A-Za-z]+)?$', expand=False).dropna()
+          if codes.empty:
+              raise SystemExit('WENCAI_NO_MATCHING_STOCKS: cannot confirm data access')
+          print('WENCAI_DATA_OK rows=' + str(len(result)) + ' valid_codes=' + str(len(codes)))
+          PY
