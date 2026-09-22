@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      QUANTI_SESSION: ${{ github.event.schedule == '20 0 * * 1-5' && 'preopen' || 'auto' }}
       EMAIL_SENDER: ${{ vars.EMAIL_SENDER }}
       EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
       WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}

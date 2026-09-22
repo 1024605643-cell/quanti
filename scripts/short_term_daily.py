@@ -157,6 +157,62 @@ def _wencai_codes() -> set[str]:
     return set()
 
 
+def trading_dates(today):
+    days = pd.to_datetime(ak.tool_trade_date_hist_sina()['trade_date']).dt.date
+    previous = days[days < today]
+    if previous.empty:
+        raise ValueError('交易日历缺少上一交易日')
+    return today in set(days), previous.max()
+
+
+def completed_bars(bars, today, previous):
+    bars = bars.copy()
+    bars['date'] = pd.to_datetime(bars['date']).dt.date
+    bars = bars[bars['date'] < today].sort_values('date').drop_duplicates('date')
+    if len(bars) < 25 or bars.iloc[-1]['date'] != previous:
+        raise ValueError('最近已收盘交易日K线缺失')
+    return bars
+
+
+def scan_preopen(now=None):
+    """No same-day volume/price filters: score only completed daily bars."""
+    from concurrent.futures import ThreadPoolExecutor
+    global WENCAI_STATUS
+    today = (now or datetime.now(BEIJING)).date()
+    is_session, previous = trading_dates(today)
+    if not is_session:
+        return [], []
+    WENCAI_STATUS = '盘前仅按已收盘日K评分，今日问财条件不参与加分'
+    spot = _spot().copy()
+    spot['代码'] = spot['代码'].astype(str).str.zfill(6)
+    pool = spot[spot['代码'].str.match(r'^(00|60|30|68)') &
+                ~spot['名称'].astype(str).str.contains(r'ST|退|^[NC]', case=False, regex=True)].copy()
+    # Bound remote history requests using prior rolling returns, never opening volume.
+    gain = pd.to_numeric(pool.get('5日涨跌幅', pd.Series(0, index=pool.index)), errors='coerce').fillna(0)
+    pool = pool.assign(pre_score=gain.clip(-5, 15)).sort_values('pre_score', ascending=False).head(160)
+    def evaluate(item):
+        code = item['代码']
+        try:
+            bars = completed_bars(_history(code, (today-timedelta(days=370)).strftime('%Y%m%d'),
+                                          previous.strftime('%Y%m%d')), today, previous)
+            if bars.iloc[0]['date'] > today-timedelta(days=180):
+                raise ValueError('上市历史不足180天或历史数据不完整')
+            row = pd.Series(item)
+            row['涨跌幅'] = (float(bars.iloc[-1]['close'])/float(bars.iloc[-2]['close'])-1)*100
+            # Missing turnover contributes zero instead of substituting today's turnover.
+            row['换手率'] = _number(bars.iloc[-1].get('turnover')) * (100 if PREFER_SINA else 1)
+            score, reasons, rejects = _score(row, bars)
+            return dict(code=code, name=item['名称'], score=score,
+                        price=float(bars.iloc[-1]['close']), change=row['涨跌幅'],
+                        reasons=reasons, rejects=rejects, bar_date=previous.isoformat())
+        except Exception as exc:
+            return dict(code=code, name=item['名称'], rejects=[f'日K数据不可用：{type(exc).__name__}'])
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        results = list(executor.map(evaluate, pool.to_dict('records')))
+    ranked = sorted([x for x in results if not x['rejects']], key=lambda x:x['score'], reverse=True)
+    return ranked[:5], [x for x in results if x['rejects']][:10]
+
+
 def scan() -> tuple[list[dict], list[dict]]:
     spot = _spot()
     spot["代码"] = spot["代码"].astype(str).str.zfill(6)
@@ -264,18 +320,23 @@ def notify_email(subject: str, html: str) -> None:
 
 
 def main() -> None:
-    candidates, rejected = scan()
+    now = datetime.now(BEIJING)
+    if not trading_dates(now.date())[0]:
+        return
+    preopen = os.getenv('QUANTI_SESSION') == 'preopen' or (now.hour, now.minute) < (9, 30)
+    candidates, rejected = scan_preopen(now) if preopen else scan()
     state = _load_state()
     prices = {x["code"]: x["price"] for x in candidates}
-    for code in state.get("positions", {}):
+    for code in ([] if preopen else state.get("positions", {})):
         if code not in prices:
             spot = _spot()
             match = spot[spot["代码"].astype(str).str.zfill(6) == code]
             if not match.empty:
                 prices[code] = _number(match.iloc[0]["最新价"])
-    alerts = review_positions(state, prices)
+    alerts = [] if preopen else review_positions(state, prices)
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     report = {"generated_at": datetime.now(BEIJING).isoformat(timespec="seconds"),
+              "session": "preopen" if preopen else "intraday",
               "candidates": candidates, "rejected": rejected, "alerts": alerts,
               "paper": state, "ai_review": ai_review(candidates), "wencai_status": WENCAI_STATUS}
     OUT.mkdir(parents=True, exist_ok=True)
@@ -285,9 +346,12 @@ def main() -> None:
     (OUT / "index.html").write_text(html, encoding="utf-8")
     top = "\n".join(f"{i+1}. {x['code']} {x['name']} {x['score']:.1f}分" for i, x in enumerate(candidates[:5]))
     top += '\n' + WENCAI_STATUS
+    if preopen:
+        top += '\n依据最近已收盘日K，价格为历史收盘参考价；盘前范围为历史涨幅预筛选的160只股票，非全市场逐股排名。'
+        top += '\n日K日期：' + (candidates[0]['bar_date'] if candidates else '无合格候选')
     action_url = os.getenv("CONFIRM_URL", "")
     details = '\n'.join(f"{a['code']}：{a['why']}，建议卖出{a['fraction']:.0%}当前仓位" for a in alerts) or '暂无持仓风控提醒'
-    notify_wecom(f"A股短线量化候选\n{top}\n{details}\n查看账户与提交方法：{action_url}\n请在Windows本机软件中确认模拟买卖，不再使用Run workflow。本机持仓与风险请以软件和本机回执为准。公告新闻风险尚未完整核验。")
+    notify_wecom(f"{'盘前日K买入候选' if preopen else 'A股短线量化候选'}\n{top}\n{details}\n查看账户与提交方法：{action_url}\n请在Windows本机软件中确认模拟买卖，不再使用Run workflow。本机持仓与风险请以软件和本机回执为准。公告新闻风险尚未完整核验。")
     notify_email("A股短线量化日报", html)
 
 
