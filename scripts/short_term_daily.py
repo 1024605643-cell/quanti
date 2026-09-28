@@ -268,7 +268,8 @@ def ai_review(candidates: list[dict]) -> str:
                       ensure_ascii=False).encode()
     try:
         req = Request(base + "/responses", data=body, headers={
-            "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+            "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+            "User-Agent": "QuantiTerminal/0.3.3"})
         with urlopen(req, timeout=60) as response:
             data = json.load(response)
         if data.get("output_text"):
