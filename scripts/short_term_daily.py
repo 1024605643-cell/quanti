@@ -324,7 +324,11 @@ def main() -> None:
     now = datetime.now(BEIJING)
     if not trading_dates(now.date())[0]:
         return
-    preopen = os.getenv('QUANTI_SESSION') == 'preopen' or (now.hour, now.minute) < (9, 30)
+    before_open = (now.hour, now.minute) < (9, 30)
+    if os.getenv('QUANTI_SESSION') == 'preopen' and not before_open:
+        print('盘前任务超过09:30，跳过过时推荐。')
+        return
+    preopen = before_open
     candidates, rejected = scan_preopen(now) if preopen else scan()
     state = _load_state()
     prices = {x["code"]: x["price"] for x in candidates}
